@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+
+PROJECT_NAME="$1"
+if [[ "$PROJECT_NAME" == "" ]]; then
+    echo    "Missing project name." >&2
+    echo    "Command should be:" >&2
+    echo -e "\taws-deploy <project name> <source version>" >&2
+    exit 1
+fi
+
+SOURCE_VERSION="$2"
+if [[ "$SOURCE_VERSION" == "" ]]; then
+    echo    "Missing source version." >&2
+    echo    "Command should be:" >&2
+    echo -e "\taws-deploy <project name> <source version>" >&2
+    exit 1
+fi
+
+if [[ "$3" != "" ]]; then
+    ENV_VARS_OVERRIDE="--environment-variables-override"
+    ENV_VARS="[ "
+
+    for KEYVALUE in "${@:3}"; do
+        KEY=$(echo $KEYVALUE | cut -f1 -d=)
+        VALUE=$(echo $KEYVALUE | cut -f2 -d=)
+
+        ENV_VARS="$ENV_VARS {\"name\":\"$KEY\",\"value\":\"$VALUE\",\"type\":\"PLAINTEXT\"},"
+    done
+
+    ENV_VARS=`echo $ENV_VARS | sed '$s/,$//'`
+    ENV_VARS="$ENV_VARS ]"
+fi
+
+POLLING_INTERVAL="10"
+
+echo
+echo "Start building $SOURCE_VERSION to $PROJECT_NAME."
+BUILD_RESULT=`aws --region us-east-1 codebuild start-build --project-name "$PROJECT_NAME" --source-version "$SOURCE_VERSION" $ENV_VARS_OVERRIDE "$ENV_VARS" | tr '\n' ' ' | tr '\t' ' '`
+BUILD_ID=`echo $BUILD_RESULT | sed -E 's/.*"id": "([^"]*)".*/\1/g'`
+echo "Build started."
+
+trap '{ \
+    STOP_RESULT=`aws --region us-east-1 codebuild stop-build --id "$BUILD_ID" | tr "\n" " " | tr "\t" " "`; \
+    BUILD_STATUS=`echo $STOP_RESULT | sed -E "s/.*\"buildStatus\": \"([^\"]*)\".*/\1/g"`; \
+    echo "Current status: $BUILD_STATUS"; \
+    exit 1; \
+}' INT
+
+echo
+echo "Start status polling with an interval of $POLLING_INTERVAL seconds."
+BUILD_COMPLETE="false"
+while [[ "$BUILD_COMPLETE" != "true" ]]; do
+
+    LIST_RESULT=`aws --region us-east-1 codebuild batch-get-builds --ids $BUILD_ID | tr '\n' ' ' | tr '\t' ' '`
+    BUILD_COMPLETE=`echo $LIST_RESULT | sed -E 's/.*"buildComplete": ([a-z]*).*/\1/g'`
+    BUILD_STATUS=`echo $LIST_RESULT | sed -E 's/.*"buildStatus": "([^"]*)".*/\1/g'`
+    echo "Current status: $BUILD_STATUS"
+    sleep "$POLLING_INTERVAL"
+
+done
+
+echo
+echo "Finished with status: $BUILD_STATUS"
